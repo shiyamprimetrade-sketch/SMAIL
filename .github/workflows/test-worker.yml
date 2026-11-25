@@ -1,0 +1,44 @@
+name: Test Worker
+
+on:
+  push:
+    branches:
+      - milestone-2-auth-schema
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate SQL schema
+        run: python worker/test/test_schema.py
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        working-directory: worker
+        run: npm ci
+
+      - name: TypeScript validation
+        working-directory: worker
+        run: npm run typecheck
+
+      - name: Worker tests
+        working-directory: worker
+        run: npm test

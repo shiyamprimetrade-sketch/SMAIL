@@ -7,3 +7,9 @@ workers_dev = false
 [[routes]]
 pattern = "api.slickk.online"
 custom_domain = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "smail-db"
+database_id = "d9914532-bc8a-45e9-a08f-05e88b2dbc29"
+migrations_dir = "migrations"
