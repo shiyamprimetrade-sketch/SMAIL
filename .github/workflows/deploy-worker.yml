@@ -1,0 +1,48 @@
+name: Deploy Worker
+on:
+  push:
+    branches: [main]
+    paths: ['worker/**', '.github/workflows/deploy-worker.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: smail-production
+  cancel-in-progress: false
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: |
+          if [ ! -f package-lock.json ]; then npm install --package-lock-only --ignore-scripts; fi
+          npm ci
+      - uses: actions/upload-artifact@v4
+        with:
+          name: worker-lockfile
+          path: worker/package-lock.json
+      - run: npm run typecheck
+      - run: npm test
+      - uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: worker
+          wranglerVersion: '4.20.0'
+          command: deploy
+      - name: Verify public HTTPS health
+        run: |
+          for attempt in $(seq 1 18); do
+            if curl --fail --silent --show-error --max-time 15 https://api.slickk.online/health -o /tmp/smail-health.json && jq -e '. == {"ok":true}' /tmp/smail-health.json; then exit 0; fi
+            sleep 10
+          done
+          exit 1
