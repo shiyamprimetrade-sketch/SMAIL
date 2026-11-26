@@ -412,7 +412,7 @@ describe('Message persistence orchestration', () => {
         has_attachments: 1,
       }),
     )).rejects.toThrow(
-      'Attachment persistence not implemented'
+      'Attachment metadata mismatch'
     );
 
     expect(batch).not.toHaveBeenCalled();
@@ -432,5 +432,141 @@ describe('Message persistence orchestration', () => {
     )).rejects.toThrow('Lookup failed');
 
     expect(batch).not.toHaveBeenCalled();
+  });
+});
+
+describe('Atomic attachment integration', () => {
+  const attachment = {
+    filename: 'invoice.txt',
+    mime: 'text/plain',
+    contentId: null,
+    isInline: false,
+    size: 4,
+    data: new Uint8Array([1, 2, 3, 4]),
+  };
+
+  it('stores message and attachment in one batch', async () => {
+    const { db, batch, statements } =
+      mockDatabase();
+
+    batch.mockResolvedValueOnce(
+      Array.from(
+        { length: 4 },
+        () => ({ success: true }),
+      )
+    );
+
+    const result = await persistMessage(
+      db,
+      record({ has_attachments: 1 }),
+      [attachment],
+    );
+
+    expect(result.status).toBe('stored');
+    expect(batch).toHaveBeenCalledTimes(1);
+
+    expect(batch.mock.calls[0][0])
+      .toHaveLength(4);
+
+    const sql = statements.map(
+      statement => statement.sql
+    );
+
+    const inserted = sql.findIndex(
+      value => value.includes(
+        'INSERT INTO attachments'
+      )
+    );
+
+    expect(inserted).toBeGreaterThan(-1);
+  });
+
+  it('stores multiple attachments in one batch', async () => {
+    const { db, batch } = mockDatabase();
+
+    batch.mockResolvedValueOnce(
+      Array.from(
+        { length: 5 },
+        () => ({ success: true }),
+      )
+    );
+
+    const result = await persistMessage(
+      db,
+      record({ has_attachments: 1 }),
+      [attachment, attachment],
+    );
+
+    expect(result.status).toBe('stored');
+
+    expect(batch.mock.calls[0][0])
+      .toHaveLength(5);
+  });
+
+  it('rejects unexpected attachment data', async () => {
+    const { db, batch } = mockDatabase();
+
+    await expect(persistMessage(
+      db,
+      record({ has_attachments: 0 }),
+      [attachment],
+    )).rejects.toThrow(
+      'Attachment metadata mismatch'
+    );
+
+    expect(batch).not.toHaveBeenCalled();
+  });
+
+  it('rejects invalid attachment sizes before writing', async () => {
+    const { db, batch } = mockDatabase();
+
+    await expect(persistMessage(
+      db,
+      record({ has_attachments: 1 }),
+      [{
+        ...attachment,
+        size: 99,
+      }],
+    )).rejects.toThrow(
+      'Attachment size mismatch'
+    );
+
+    expect(batch).not.toHaveBeenCalled();
+  });
+
+  it('does not insert attachments for duplicates', async () => {
+    const { db, batch, first } =
+      mockDatabase();
+
+    first.mockResolvedValueOnce({
+      id: 'existing-message',
+      threadId: 'existing-thread',
+      messageId: '<test@example.com>',
+    });
+
+    const result = await persistMessage(
+      db,
+      record({ has_attachments: 1 }),
+      [attachment],
+    );
+
+    expect(result.status).toBe('duplicate');
+    expect(batch).not.toHaveBeenCalled();
+  });
+
+  it('propagates attachment transaction failure', async () => {
+    const { db, batch } = mockDatabase();
+
+    batch.mockRejectedValueOnce(
+      new Error('Attachment write failed')
+    );
+
+    await expect(persistMessage(
+      db,
+      record({ has_attachments: 1 }),
+      [attachment],
+    )).rejects.toThrow(
+      'Attachment write failed'
+    );
   });
 });

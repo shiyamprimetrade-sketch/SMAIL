@@ -1,4 +1,12 @@
 import type {
+  ParsedAttachment,
+} from './mime';
+
+import {
+  buildAttachmentStatements,
+} from './attachmentPersistence';
+
+import type {
   MessageRecord,
 } from './messageRecord';
 
@@ -132,10 +140,14 @@ export function buildMessageStatements(
 export async function persistMessage(
   db: D1Database,
   record: MessageRecord,
+  attachments: readonly ParsedAttachment[] = [],
 ): Promise<PersistenceResult> {
-  if (record.has_attachments !== 0) {
+  if (
+    record.has_attachments !==
+    (attachments.length > 0 ? 1 : 0)
+  ) {
     throw new Error(
-      'Attachment persistence not implemented'
+      'Attachment metadata mismatch'
     );
   }
 
@@ -153,12 +165,29 @@ export async function persistMessage(
   }
 
   try {
+    const messageStatements =
+      buildMessageStatements(db, record);
+
+    const attachmentStatements =
+      buildAttachmentStatements(
+        db,
+        record.id,
+        attachments,
+      );
+
+    const statements = [
+      messageStatements[0],
+      messageStatements[1],
+      ...attachmentStatements,
+      messageStatements[2],
+    ];
+
     const results = await db.batch(
-      buildMessageStatements(db, record)
+      statements
     );
 
     if (
-      results.length !== 3 ||
+      results.length !== statements.length ||
       results.some(
         result => result.success !== true
       )
