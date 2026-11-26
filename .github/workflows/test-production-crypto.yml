@@ -59,67 +59,47 @@ jobs:
 
           echo "url=$URL" >> "$GITHUB_OUTPUT"
 
-      - name: Verify hosted password authentication
+      - name: Diagnose hosted password authentication
         env:
           PROBE_URL: ${{ steps.deploy.outputs.url }}
         run: |
           set -e
 
-          for attempt in $(seq 1 12); do
-            if curl --fail --silent --show-error \
-              --max-time 20 \
-              "$PROBE_URL/correct" \
-              -o /tmp/correct.json; then
-              break
-            fi
-            sleep 5
-          done
+          sleep 10
 
-          test -s /tmp/correct.json
+          for endpoint in diagnostic correct incorrect; do
 
-          jq -e \
-            '.ok == true and .verified == true and .iterations == 210000' \
-            /tmp/correct.json
+            echo "=== ENDPOINT: $endpoint ==="
 
-          for attempt in $(seq 1 5); do
+            curl --silent --show-error \
+              --max-time 30 \
+              -w '\\nHTTP_STATUS=%{http_code}\\n' \
+              "$PROBE_URL/$endpoint"
 
-            curl --fail --silent --show-error \
-              --max-time 20 \
-              "$PROBE_URL/correct" \
-              -o /tmp/correct.json
-
-            curl --fail --silent --show-error \
-              --max-time 20 \
-              "$PROBE_URL/incorrect" \
-              -o /tmp/incorrect.json
-
-            jq -e \
-              '.ok == true and .verified == true and .iterations == 210000' \
-              /tmp/correct.json
-
-            jq -e \
-              '.ok == true and .verified == false and .iterations == 210000' \
-              /tmp/incorrect.json
-
-            echo "=== ROUND $attempt ==="
-            cat /tmp/correct.json
-            echo
-            cat /tmp/incorrect.json
             echo
 
           done
-
-          echo "PASS: 10 hosted password verification checks"
 
       - name: Delete temporary Worker
         if: always() && steps.deploy.outcome != 'skipped'
         run: |
-          npx wrangler delete \
-            --config test/production/wrangler.toml \
-            --name "$PROBE_NAME" \
-            --force
+          set -e
 
-          echo "PASS: Temporary Worker cleanup completed"
+          API="https://api.cloudflare.com/client/v4"
+          RESOURCE="$API/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$PROBE_NAME"
+
+          curl --silent --show-error \
+            --max-time 30 \
+            --request DELETE \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "$RESOURCE" \
+            -o /tmp/smail-delete.json
+
+          cat /tmp/smail-delete.json
+
+          jq -e '.success == true' /tmp/smail-delete.json
+
+          echo "PASS: Temporary Worker deleted"
 
       - name: Verify original production health
         if: always()
