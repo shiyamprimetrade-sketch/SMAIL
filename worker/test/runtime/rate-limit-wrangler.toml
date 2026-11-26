@@ -1,0 +1,11 @@
+name = "smail-rate-limit-test"
+main = "rate-limit-probe.ts"
+compatibility_date = "2026-11-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "smail-rate-limit-test-db"
+database_id = "00000000-0000-4000-8000-000000000002"
+migrations_dir = "../../migrations"
