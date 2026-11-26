@@ -1,0 +1,88 @@
+name: Test MIME Worker Runtime
+
+on:
+  push:
+    branches:
+      - milestone-3-inbound-email
+    paths:
+      - 'worker/src/services/mime.ts'
+      - 'worker/src/services/streams.ts'
+      - 'worker/test/runtime/mime-*'
+      - 'worker/package*.json'
+      - '.github/workflows/test-mime-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Verify TypeScript
+        run: npm run typecheck
+
+      - name: Execute isolated Worker runtime
+        run: |
+          set -euo pipefail
+
+          npx --no-install wrangler dev \
+            --config test/runtime/mime-wrangler.toml \
+            --local \
+            --port 8791 \
+            > /tmp/mime-worker.log 2>&1 &
+
+          PID=$!
+
+          trap 'kill "$PID" 2>/dev/null || true' EXIT
+
+          READY=0
+
+          for i in $(seq 1 30); do
+            if curl -sS --max-time 30 \
+              http://127.0.0.1:8791/ \
+              -o /tmp/mime-result.json; then
+              READY=1
+              break
+            fi
+            sleep 2
+          done
+
+          cat /tmp/mime-worker.log
+
+          test "$READY" = 1
+
+          cat /tmp/mime-result.json
+
+          python3 - <<'PY'
+          import json
+
+          with open('/tmp/mime-result.json') as f:
+              result = json.load(f)
+
+          assert result["ok"], result
+          assert result["passed"] == 13, result
+          assert result["total"] == 13, result
+
+          for name, passed in result["checks"].items():
+              assert passed, name
+              print("PASS:", name)
+
+          print("RUNTIME: 13/13 PASS")
+          print("Elapsed ms:", result["elapsedMs"])
+          PY
