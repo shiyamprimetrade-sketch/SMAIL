@@ -1,3 +1,4 @@
+import { issueAccessToken } from '../../src/services/jwt';
 import app from '../../src/index';
 import { hashPassword } from '../../src/services/crypto';
 import { verifyAccessToken } from '../../src/services/jwt';
@@ -236,6 +237,133 @@ export default {
 
       checks.malformedJsonRejected =
         malformed.status === 400;
+
+
+      const authorizationLogin = await post(
+        '/auth/login',
+        {
+          password,
+          deviceLabel: 'Authorization test'
+        },
+        '192.0.2.110'
+      );
+
+      const authorizationTokens =
+        await authorizationLogin.json() as {
+          accessToken: string;
+          refreshToken: string;
+        };
+
+      async function protectedRequest(
+        token?: string,
+        path = '/messages'
+      ) {
+
+        const headers: Record<string, string> = {};
+
+        if (token !== undefined) {
+          headers.Authorization = token;
+        }
+
+        return app.request(
+          'https://smail.test' + path,
+          { method: 'GET', headers },
+          testEnv
+        );
+      }
+
+      const health = await protectedRequest(
+        undefined, '/health'
+      );
+
+      checks.publicHealthAccessible =
+        health.status === 200;
+
+      const missing = await protectedRequest();
+
+      checks.missingTokenRejected =
+        missing.status === 401;
+
+      checks.bearerChallengeProvided =
+        missing.headers.get(
+          'WWW-Authenticate'
+        ) === 'Bearer';
+
+      checks.privateResponseNotCached =
+        missing.headers.get(
+          'Cache-Control'
+        ) === 'no-store';
+
+      const malformedToken =
+        await protectedRequest('Bearer invalid');
+
+      checks.malformedTokenRejected =
+        malformedToken.status === 401;
+
+      const wrongScheme = await protectedRequest(
+        'Basic ' + authorizationTokens.accessToken
+      );
+
+      checks.wrongSchemeRejected =
+        wrongScheme.status === 401;
+
+      const valid = await protectedRequest(
+        'Bearer ' + authorizationTokens.accessToken
+      );
+
+      checks.validTokenAccepted =
+        valid.status === 404;
+
+      const parts =
+        authorizationTokens.accessToken.split('.');
+
+      parts[2] =
+        (parts[2][0] === 'A' ? 'B' : 'A') +
+        parts[2].slice(1);
+
+      const forged = await protectedRequest(
+        'Bearer ' + parts.join('.')
+      );
+
+      checks.forgedTokenRejected =
+        forged.status === 401;
+
+      const authorizationClaims =
+        await verifyAccessToken(
+          authorizationTokens.accessToken,
+          secret
+        );
+
+      if (!authorizationClaims) {
+        throw new Error(
+          'Authorization test session unavailable'
+        );
+      }
+
+      const expiredToken = await issueAccessToken(
+        secret,
+        authorizationClaims.sid,
+        Math.floor(Date.now() / 1000) - 901
+      );
+
+      const expired = await protectedRequest(
+        'Bearer ' + expiredToken
+      );
+
+      checks.expiredTokenRejected =
+        expired.status === 401;
+
+      await post('/auth/logout', {
+        refreshToken:
+          authorizationTokens.refreshToken
+      });
+
+      const revokedAccess = await protectedRequest(
+        'Bearer ' + authorizationTokens.accessToken
+      );
+
+      checks.revokedAccessTokenRejected =
+        revokedAccess.status === 401;
 
       const passed = Object.values(checks)
         .filter(Boolean).length;
