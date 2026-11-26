@@ -26,16 +26,24 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Update production dependencies
+      - name: Generate consistent dependency tree
         run: |
-          npm install --save-exact hono@4.13.22
+          npm pkg set dependencies.hono=4.13.22
+          npm pkg set devDependencies.wrangler=4.168.0
 
-      - name: Update development dependencies
-        run: |
-          npm install --save-dev --save-exact \
-            wrangler@4.168.0 \
-            vitest@latest \
-            @cloudflare/workers-types@latest
+          VITEST_VERSION=$(npm view vitest version)
+          WORKERS_VERSION=$(npm view @cloudflare/workers-types version)
+          NODE_TYPES_VERSION=$(npm view @types/node@22 version --json | node -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{const v=JSON.parse(s);console.log(Array.isArray(v)?v.at(-1):v)})')
+
+          npm pkg set "devDependencies.vitest=$VITEST_VERSION"
+          npm pkg set "devDependencies.@cloudflare/workers-types=$WORKERS_VERSION"
+          npm pkg set "devDependencies.@types/node=$NODE_TYPES_VERSION"
+
+          rm -rf node_modules
+          rm -f package-lock.json
+
+          npm install --package-lock-only
+          cat package.json
 
       - name: Verify reproducible installation
         run: npm ci
