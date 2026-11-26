@@ -1,5 +1,4 @@
 import { Hono } from 'hono';
-import { bodyLimit } from 'hono/body-limit';
 
 import type { AppEnv } from '../env';
 
@@ -24,20 +23,68 @@ auth.use('*', async (c, next) => {
   await next();
 });
 
-auth.use('*', bodyLimit({
-  maxSize: 4096,
-  onError: c => c.json({
-    error: 'payload_too_large',
-    message: 'Request too large'
-  }, 413)
-}));
+
+const MAX_AUTH_BODY = 4096;
+
+class PayloadTooLarge extends Error {}
 
 async function readObject(
   request: Request
 ): Promise<Record<string, unknown> | null> {
 
+  const declared = request.headers.get(
+    'Content-Length'
+  );
+
+  if (
+    declared !== null &&
+    Number(declared) > MAX_AUTH_BODY
+  ) {
+    throw new PayloadTooLarge();
+  }
+
+  if (!request.body) {
+    return null;
+  }
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
   try {
-    const value: unknown = await request.json();
+
+    while (true) {
+
+      const { done, value } = await reader.read();
+
+      if (done) break;
+
+      total += value.byteLength;
+
+      if (total > MAX_AUTH_BODY) {
+
+        await reader.cancel().catch(() => {});
+
+        throw new PayloadTooLarge();
+      }
+
+      chunks.push(value);
+    }
+
+    const bytes = new Uint8Array(total);
+
+    let offset = 0;
+
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+
+    const value: unknown = JSON.parse(
+      new TextDecoder('utf-8', {
+        fatal: true
+      }).decode(bytes)
+    );
 
     if (
       typeof value !== 'object' ||
@@ -49,10 +96,35 @@ async function readObject(
 
     return value as Record<string, unknown>;
 
-  } catch {
+  } catch (error) {
+
+    if (error instanceof PayloadTooLarge) {
+      throw error;
+    }
+
     return null;
+
+  } finally {
+    reader.releaseLock();
   }
 }
+
+auth.onError((error, c) => {
+
+  c.header('Cache-Control', 'no-store');
+
+  if (error instanceof PayloadTooLarge) {
+    return c.json({
+      error: 'payload_too_large',
+      message: 'Request too large'
+    }, 413);
+  }
+
+  return c.json({
+    error: 'internal_error',
+    message: 'Internal server error'
+  }, 500);
+});
 
 auth.post('/login', async c => {
 

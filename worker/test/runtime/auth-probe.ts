@@ -203,6 +203,40 @@ export default {
       checks.oversizedRequestRejected =
         oversized.status === 413;
 
+
+      const declaredOversized = await app.request(
+        'https://smail.test/auth/login',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': '5000',
+            'CF-Connecting-IP': '192.0.2.101'
+          },
+          body: '{}'
+        },
+        testEnv
+      );
+
+      checks.declaredOversizedRejected =
+        declaredOversized.status === 413;
+
+      const malformed = await app.request(
+        'https://smail.test/auth/login',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'CF-Connecting-IP': '192.0.2.101'
+          },
+          body: '{invalid-json'
+        },
+        testEnv
+      );
+
+      checks.malformedJsonRejected =
+        malformed.status === 400;
+
       const passed = Object.values(checks)
         .filter(Boolean).length;
 
