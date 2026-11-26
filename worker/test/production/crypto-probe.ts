@@ -13,11 +13,42 @@ export default {
 
     if (
       request.method !== 'GET' ||
-      !['/correct', '/incorrect'].includes(path)
+      !['/correct', '/incorrect', '/diagnostic'].includes(path)
     ) {
       return new Response('Not found', {
         status: 404
       });
+    }
+
+
+    if (path === '/diagnostic') {
+      try {
+        const key = await crypto.subtle.importKey(
+          'raw',
+          new TextEncoder().encode('synthetic-test'),
+          'PBKDF2',
+          false,
+          ['deriveBits']
+        );
+
+        await crypto.subtle.deriveBits({
+          name: 'PBKDF2',
+          hash: 'SHA-256',
+          salt: new Uint8Array(16),
+          iterations: 210000
+        }, key, 256);
+
+        return Response.json({
+          ok: true,
+          iterations: 210000
+        });
+      } catch (error) {
+        return Response.json({
+          ok: false,
+          iterations: 210000,
+          error: String(error)
+        }, { status: 500 });
+      }
     }
 
     const start = Date.now();
