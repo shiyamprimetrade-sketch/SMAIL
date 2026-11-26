@@ -1,0 +1,5 @@
+name = "smail-argon2-runtime-test"
+main = "probe.ts"
+compatibility_date = "2026-11-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
