@@ -127,6 +127,36 @@ export default {
       checks.refreshTokenRotated =
         rotated.refreshToken !== tokens.refreshToken;
 
+      const deviceClaims = await verifyAccessToken(
+        tokens.accessToken,
+        secret
+      );
+
+      const deviceRows = await env.DB.prepare(`
+        SELECT device_label, revoked
+        FROM refresh_tokens
+        WHERE device_id = ?
+      `).bind(
+        deviceClaims?.sid ?? ''
+      ).all<{
+        device_label: string;
+        revoked: number;
+      }>();
+
+      checks.deviceLabelPersisted =
+        deviceRows.results.some(
+          row =>
+            row.revoked === 1 &&
+            row.device_label === 'Test device'
+        );
+
+      checks.deviceLabelPreservedOnRotation =
+        deviceRows.results.some(
+          row =>
+            row.revoked === 0 &&
+            row.device_label === 'Test device'
+        );
+
       const replay = await post('/auth/refresh', {
         refreshToken: tokens.refreshToken
       });

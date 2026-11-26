@@ -42,8 +42,17 @@ export async function revokeAllSessions(
 
 export async function createSession(
   db: D1Database,
-  secret: string
+  secret: string,
+  deviceLabel: string = 'Unknown device'
 ): Promise<TokenPair> {
+  const label = deviceLabel.trim();
+
+  if (
+    label.length === 0 ||
+    label.length > 128
+  ) {
+    throw new Error('Invalid device label');
+  }
   const id = crypto.randomUUID();
   const sessionId = crypto.randomUUID();
   const refreshToken = randomToken();
@@ -58,13 +67,14 @@ export async function createSession(
 
   await db.prepare(`
     INSERT INTO refresh_tokens
-      (id, token_hash, device_id, expires_at, revoked)
-    VALUES (?, ?, ?, ?, 0)
+      (id, token_hash, device_id, expires_at, revoked, device_label)
+    VALUES (?, ?, ?, ?, 0, ?)
   `).bind(
     id,
     tokenHash,
     sessionId,
-    now + REFRESH_TOKEN_TTL
+    now + REFRESH_TOKEN_TTL,
+    label
   ).run();
 
   return {
@@ -127,8 +137,8 @@ export async function rotateSession(
 
     db.prepare(`
       INSERT INTO refresh_tokens
-        (id, token_hash, device_id, expires_at, revoked)
-      SELECT ?, ?, device_id, ?, 0
+        (id, token_hash, device_id, expires_at, revoked, device_label)
+      SELECT ?, ?, device_id, ?, 0, device_label
       FROM refresh_tokens
       WHERE id = ?
         AND revoked = 1

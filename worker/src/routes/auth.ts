@@ -240,7 +240,8 @@ auth.post('/login', async c => {
 
   const tokens = await createSession(
     c.env.DB,
-    c.env.JWT_SECRET
+    c.env.JWT_SECRET,
+    body.deviceLabel.trim()
   );
 
   return c.json(tokens);
