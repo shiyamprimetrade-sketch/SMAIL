@@ -1,0 +1,173 @@
+name: Evaluate HTML Sanitizer
+
+on:
+  push:
+    branches:
+      - milestone-3-inbound-email
+    paths:
+      - '.github/workflows/evaluate-sanitizer.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install existing dependencies
+        run: npm ci
+
+      - name: Evaluate sanitizer dependency
+        run: |
+          npm view sanitize-html version license dependencies
+
+          npm install --save-exact sanitize-html
+
+          npm install --save-dev --save-exact @types/sanitize-html
+
+          npm ls sanitize-html @types/sanitize-html
+
+      - name: Audit dependency security
+        run: |
+          npm audit --omit=dev
+          npm audit
+
+      - name: Verify sanitizer behavior
+        run: |
+          node --input-type=module <<'JS'
+          import sanitizeHtml from 'sanitize-html';
+          import assert from 'node:assert/strict';
+
+          const options = {
+            allowedTags: [
+              'p', 'div', 'span', 'strong',
+              'em', 'a', 'img', 'br',
+              'table', 'tr', 'td', 'tbody',
+              'ul', 'ol', 'li'
+            ],
+            allowedAttributes: {
+              a: ['href', 'title'],
+              img: ['src', 'alt', 'width', 'height']
+            },
+            allowedSchemes: ['https', 'mailto'],
+            allowedSchemesByTag: {
+              img: ['https']
+            },
+            allowProtocolRelative: false,
+            nonTextTags: [
+              'script', 'style', 'textarea',
+              'option', 'iframe', 'object',
+              'embed', 'form'
+            ]
+          };
+
+          const clean = html =>
+            sanitizeHtml(html, options);
+
+          const checks = [
+            [
+              'Preserve paragraph',
+              clean('<p>Hello</p>') === '<p>Hello</p>'
+            ],
+            [
+              'Remove script',
+              !clean('<script>alert(1)</script>')
+                .includes('alert')
+            ],
+            [
+              'Remove iframe',
+              !clean('<iframe src="https://example.com"></iframe>')
+                .includes('iframe')
+            ],
+            [
+              'Remove form',
+              !clean('<form><input name="password"></form>')
+                .includes('form')
+            ],
+            [
+              'Remove object',
+              !clean('<object data="test"></object>')
+                .includes('object')
+            ],
+            [
+              'Remove embed',
+              !clean('<embed src="test">')
+                .includes('embed')
+            ],
+            [
+              'Remove event handler',
+              !clean('<p onclick="alert(1)">Hello</p>')
+                .includes('onclick')
+            ],
+            [
+              'Remove javascript URL',
+              !clean('<a href="javascript:alert(1)">Click</a>')
+                .includes('javascript:')
+            ],
+            [
+              'Remove encoded javascript URL',
+              !clean('<a href="jav&#x61;script:alert(1)">Click</a>')
+                .includes('href=')
+            ],
+            [
+              'Preserve HTTPS link',
+              clean('<a href="https://example.com">Link</a>')
+                .includes('https://example.com')
+            ],
+            [
+              'Preserve HTTPS image',
+              clean('<img src="https://example.com/logo.png">')
+                .includes('https://example.com/logo.png')
+            ],
+            [
+              'Remove data image URL',
+              !clean('<img src="data:image/svg+xml,test">')
+                .includes('data:')
+            ],
+            [
+              'Remove SVG markup',
+              !clean('<svg onload="alert(1)"></svg>')
+                .includes('<svg')
+            ],
+            [
+              'Preserve Bengali text',
+              clean('<p>বাংলাদেশ</p>')
+                .includes('বাংলাদেশ')
+            ]
+          ];
+
+          for (const [name, passed] of checks) {
+            assert.equal(passed, true, name);
+            console.log('PASS:', name);
+          }
+
+          console.log('SANITIZER: 14/14 PASS');
+          JS
+
+      - name: Verify TypeScript
+        run: npm run typecheck
+
+      - name: Execute regression tests
+        run: npm test
+
+      - name: Export verified dependencies
+        uses: actions/upload-artifact@v4
+        with:
+          name: smail-sanitizer-dependencies
+          path: |
+            worker/package.json
+            worker/package-lock.json
+          retention-days: 7
