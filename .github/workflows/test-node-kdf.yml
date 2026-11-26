@@ -1,0 +1,98 @@
+name: Test Hosted Node KDF
+
+on:
+  push:
+    branches:
+      - milestone-2-auth-schema
+    paths:
+      - 'worker/test/node-kdf/**'
+      - '.github/workflows/test-node-kdf.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PROBE_NAME: smail-kdf-${{ github.run_id }}-${{ github.run_attempt }}
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm ci
+
+      - name: Deploy isolated KDF probe
+        id: deploy
+        run: |
+          set -eo pipefail
+
+          npx wrangler deploy \
+            --config test/node-kdf/wrangler.toml \
+            --name "$PROBE_NAME" \
+            2>&1 | tee /tmp/kdf-deploy.log
+
+          URL=$(grep -oE "https://${PROBE_NAME}\.[a-zA-Z0-9.-]+\.workers\.dev" /tmp/kdf-deploy.log | head -n 1)
+
+          test -n "$URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Verify hosted cryptography
+        env:
+          PROBE_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          set -e
+          sleep 10
+
+          for endpoint in correct incorrect; do
+            echo "=== ENDPOINT: $endpoint ==="
+
+            curl -sS --max-time 30 \
+              -w '\nHTTP_STATUS=%{http_code}\n' \
+              "$PROBE_URL/$endpoint" \
+              -o "/tmp/$endpoint.json"
+
+            cat "/tmp/$endpoint.json"
+            echo
+          done
+
+          jq -e '.ok == true and .verified == true and .iterations == 210000' /tmp/correct.json
+
+          jq -e '.ok == true and .verified == false and .iterations == 210000' /tmp/incorrect.json
+
+          echo "PASS: Hosted Node PBKDF2 reference verification"
+
+      - name: Delete temporary Worker
+        if: always()
+        run: |
+          RESOURCE="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$PROBE_NAME"
+
+          curl -sS --max-time 30 \
+            -X DELETE \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "$RESOURCE" \
+            -o /tmp/delete.json
+
+          cat /tmp/delete.json
+          jq -e '.success == true' /tmp/delete.json
+
+          echo "PASS: Temporary Worker deleted"
+
+      - name: Verify original production health
+        if: always()
+        run: |
+          curl -fsS --max-time 20 \
+            https://api.slickk.online/health \
+            | jq -e '. == {"ok":true}'

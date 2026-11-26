@@ -1,0 +1,60 @@
+name: Test Cloudflare Runtime
+
+on:
+  push:
+    branches:
+      - milestone-2-auth-schema
+    paths:
+      - 'worker/package.json'
+      - 'worker/package-lock.json'
+      - 'worker/src/services/crypto.ts'
+      - 'worker/test/runtime/**'
+      - '.github/workflows/test-runtime.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Test Cloudflare Worker runtime
+        run: |
+          npx wrangler dev \
+            --config test/runtime/wrangler.toml \
+            --local \
+            --ip 127.0.0.1 \
+            --port 8787 > /tmp/smail-runtime.log 2>&1 &
+
+          PID=$!
+          trap 'kill "$PID" 2>/dev/null || true; cat /tmp/smail-runtime.log' EXIT
+
+          for i in $(seq 1 30); do
+            if curl -s \
+              http://127.0.0.1:8787/ \
+              -o /tmp/smail-probe.json; then
+              cat /tmp/smail-probe.json
+              echo
+              python3 -c 'import json; d=json.load(open("/tmp/smail-probe.json")); assert d.get("ok") is True, d'
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "Runtime startup failed"
+          exit 1

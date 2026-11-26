@@ -1,0 +1,94 @@
+name: Test Argon2 Runtime
+
+on:
+  push:
+    branches:
+      - milestone-2-auth-schema
+    paths:
+      - 'worker/test/argon2/**'
+      - '.github/workflows/test-argon2-runtime.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install isolated candidate
+        run: |
+          npm ci
+          npm install --save-exact hash-wasm@4.13.0
+          npm audit
+
+      - name: Test local Cloudflare runtime
+        run: |
+          set -e
+
+          npx wrangler dev \
+            --local \
+            --config test/argon2/wrangler.toml \
+            --ip 127.0.0.1 \
+            --port 8791 \
+            > /tmp/argon2-runtime.log 2>&1 &
+
+          PID=$!
+
+          trap 'kill "$PID" 2>/dev/null || true; cat /tmp/argon2-runtime.log' EXIT
+
+          READY=0
+
+          for attempt in $(seq 1 30); do
+            if curl -sS --max-time 10 \
+              http://127.0.0.1:8791/correct \
+              -o /tmp/argon2-correct.json; then
+              READY=1
+              break
+            fi
+
+            sleep 2
+          done
+
+          test "$READY" = "1"
+
+          curl -sS --max-time 30 \
+            http://127.0.0.1:8791/incorrect \
+            -o /tmp/argon2-incorrect.json
+
+          echo "=== CORRECT PASSWORD ==="
+          cat /tmp/argon2-correct.json
+          echo
+
+          echo "=== INCORRECT PASSWORD ==="
+          cat /tmp/argon2-incorrect.json
+          echo
+
+          python - <<'PY'
+          import json
+
+          with open("/tmp/argon2-correct.json") as f:
+              correct = json.load(f)
+
+          with open("/tmp/argon2-incorrect.json") as f:
+              incorrect = json.load(f)
+
+          assert correct.get("ok") is True, correct
+          assert correct.get("verified") is True, correct
+
+          assert incorrect.get("ok") is True, incorrect
+          assert incorrect.get("verified") is False, incorrect
+
+          print("PASS: Local Cloudflare Argon2 runtime")
+          PY

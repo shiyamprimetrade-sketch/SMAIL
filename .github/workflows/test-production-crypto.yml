@@ -1,0 +1,110 @@
+name: Test Production Cryptography
+
+on:
+  push:
+    branches:
+      - milestone-2-auth-schema
+    paths:
+      - '.github/workflows/test-production-crypto.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smail-production-crypto
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/milestone-2-auth-schema'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PROBE_NAME: smail-crypto-${{ github.run_id }}-${{ github.run_attempt }}
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify TypeScript
+        run: npm run typecheck
+
+      - name: Deploy isolated probe
+        id: deploy
+        run: |
+          set -o pipefail
+
+          npx wrangler deploy \
+            --config test/production/wrangler.toml \
+            --name "$PROBE_NAME" \
+            2>&1 | tee /tmp/smail-probe-deploy.log
+
+          URL=$(grep -oE "https://${PROBE_NAME}\.[a-zA-Z0-9.-]+\.workers\.dev" \
+            /tmp/smail-probe-deploy.log | head -n 1)
+
+          test -n "$URL"
+
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Diagnose hosted password authentication
+        env:
+          PROBE_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          set -e
+
+          sleep 10
+
+          for endpoint in diagnostic correct incorrect; do
+
+            echo "=== ENDPOINT: $endpoint ==="
+
+            curl --silent --show-error \
+              --max-time 30 \
+              -w '\\nHTTP_STATUS=%{http_code}\\n' \
+              "$PROBE_URL/$endpoint"
+
+            echo
+
+          done
+
+      - name: Delete temporary Worker
+        if: always() && steps.deploy.outcome != 'skipped'
+        run: |
+          set -e
+
+          API="https://api.cloudflare.com/client/v4"
+          RESOURCE="$API/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$PROBE_NAME"
+
+          curl --silent --show-error \
+            --max-time 30 \
+            --request DELETE \
+            --header "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "$RESOURCE" \
+            -o /tmp/smail-delete.json
+
+          cat /tmp/smail-delete.json
+
+          jq -e '.success == true' /tmp/smail-delete.json
+
+          echo "PASS: Temporary Worker deleted"
+
+      - name: Verify original production health
+        if: always()
+        run: |
+          curl --fail --silent --show-error \
+            --max-time 20 \
+            https://api.slickk.online/health \
+            | jq -e '. == {"ok":true}'
