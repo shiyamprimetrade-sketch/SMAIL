@@ -1,4 +1,5 @@
 import sanitizeHtml from 'sanitize-html';
+import { isTrackingPixel } from './tracking';
 
 import {
   truncateUtf8,
@@ -103,7 +104,10 @@ export function sanitizeEmailHtml(
       img: (_tagName, attribs) => {
         const attrs = { ...attribs };
 
-        if (!safeUrl(attrs.src, true)) {
+        if (
+          isTrackingPixel(attrs) ||
+          !safeUrl(attrs.src, true)
+        ) {
           delete attrs.src;
         }
 
