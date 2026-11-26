@@ -1,3 +1,7 @@
+import {
+  buildContactStatement,
+} from './contactPersistence';
+
 import type {
   ParsedAttachment,
 } from './mime';
@@ -175,11 +179,22 @@ export async function persistMessage(
         attachments,
       );
 
+    const contactStatement =
+      buildContactStatement(
+        db,
+        record.from_addr,
+        record.from_name,
+        record.received_at,
+      );
+
     const statements = [
       messageStatements[0],
       messageStatements[1],
       ...attachmentStatements,
       messageStatements[2],
+      ...(contactStatement
+        ? [contactStatement]
+        : []),
     ];
 
     const results = await db.batch(

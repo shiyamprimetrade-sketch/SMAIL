@@ -80,6 +80,7 @@ function mockDatabase() {
       { success: true },
       { success: true },
       { success: true },
+      { success: true },
     ]);
 
   return {
@@ -289,7 +290,7 @@ describe('Message persistence orchestration', () => {
     expect(batch).toHaveBeenCalledTimes(1);
 
     expect(batch.mock.calls[0][0])
-      .toHaveLength(3);
+      .toHaveLength(4);
   });
 
   it('skips existing duplicate messages', async () => {
@@ -393,6 +394,7 @@ describe('Message persistence orchestration', () => {
       { success: true },
       { success: false },
       { success: true },
+      { success: true },
     ]);
 
     await expect(persistMessage(
@@ -451,7 +453,7 @@ describe('Atomic attachment integration', () => {
 
     batch.mockResolvedValueOnce(
       Array.from(
-        { length: 4 },
+        { length: 5 },
         () => ({ success: true }),
       )
     );
@@ -466,7 +468,7 @@ describe('Atomic attachment integration', () => {
     expect(batch).toHaveBeenCalledTimes(1);
 
     expect(batch.mock.calls[0][0])
-      .toHaveLength(4);
+      .toHaveLength(5);
 
     const sql = statements.map(
       statement => statement.sql
@@ -486,7 +488,7 @@ describe('Atomic attachment integration', () => {
 
     batch.mockResolvedValueOnce(
       Array.from(
-        { length: 5 },
+        { length: 6 },
         () => ({ success: true }),
       )
     );
@@ -500,7 +502,7 @@ describe('Atomic attachment integration', () => {
     expect(result.status).toBe('stored');
 
     expect(batch.mock.calls[0][0])
-      .toHaveLength(5);
+      .toHaveLength(6);
   });
 
   it('rejects unexpected attachment data', async () => {
@@ -568,5 +570,139 @@ describe('Atomic attachment integration', () => {
     )).rejects.toThrow(
       'Attachment write failed'
     );
+  });
+});
+
+describe('Atomic contact integration', () => {
+  it('stores contact in the message transaction', async () => {
+    const { db, batch } = mockDatabase();
+
+    const result = await persistMessage(
+      db,
+      record(),
+    );
+
+    expect(result.status).toBe('stored');
+    expect(batch).toHaveBeenCalledTimes(1);
+
+    const statements =
+      batch.mock.calls[0][0];
+
+    expect(statements).toHaveLength(4);
+
+    expect(statements[3].sql)
+      .toContain('INSERT INTO contacts');
+  });
+
+  it('binds correct contact metadata', async () => {
+    const { db, batch } = mockDatabase();
+
+    await persistMessage(
+      db,
+      record(),
+    );
+
+    expect(
+      batch.mock.calls[0][0][3].values
+    ).toEqual([
+      'customer@example.com',
+      'Customer',
+      NOW,
+    ]);
+  });
+
+  it('does not update duplicate contacts', async () => {
+    const { db, batch, first } =
+      mockDatabase();
+
+    first.mockResolvedValueOnce({
+      id: 'existing-message',
+      threadId: 'existing-thread',
+      messageId: '<test@example.com>',
+    });
+
+    const result = await persistMessage(
+      db,
+      record(),
+    );
+
+    expect(result.status).toBe('duplicate');
+    expect(batch).not.toHaveBeenCalled();
+  });
+
+  it('preserves messages with invalid contact addresses', async () => {
+    const { db, batch } = mockDatabase();
+
+    batch.mockResolvedValueOnce([
+      { success: true },
+      { success: true },
+      { success: true },
+    ]);
+
+    const result = await persistMessage(
+      db,
+      record({
+        from_addr: 'invalid',
+      }),
+    );
+
+    expect(result.status).toBe('stored');
+
+    expect(batch.mock.calls[0][0])
+      .toHaveLength(3);
+  });
+
+  it('propagates contact transaction failure', async () => {
+    const { db, batch } = mockDatabase();
+
+    batch.mockRejectedValueOnce(
+      new Error('Contact write failed')
+    );
+
+    await expect(persistMessage(
+      db,
+      record(),
+    )).rejects.toThrow(
+      'Contact write failed'
+    );
+  });
+
+  it('includes contact and attachment in one batch', async () => {
+    const { db, batch } = mockDatabase();
+
+    batch.mockResolvedValueOnce(
+      Array.from(
+        { length: 5 },
+        () => ({ success: true }),
+      )
+    );
+
+    await persistMessage(
+      db,
+      record({
+        has_attachments: 1,
+      }),
+      [{
+        filename: 'invoice.txt',
+        mime: 'text/plain',
+        contentId: null,
+        isInline: false,
+        size: 4,
+        data: new Uint8Array([1, 2, 3, 4]),
+      }],
+    );
+
+    expect(batch).toHaveBeenCalledTimes(1);
+
+    const statements =
+      batch.mock.calls[0][0];
+
+    expect(statements).toHaveLength(5);
+
+    expect(statements[2].sql)
+      .toContain('INSERT INTO attachments');
+
+    expect(statements[4].sql)
+      .toContain('INSERT INTO contacts');
   });
 });
