@@ -32,8 +32,28 @@ jobs:
           path: worker/package-lock.json
       - run: npm run typecheck
       - run: npm test
-      - uses: cloudflare/wrangler-action@v3
+      - name: Validate required authentication secrets
+        env:
+          OWNER_KEY_HASH: ${{ secrets.OWNER_KEY_HASH }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
+        run: |
+          set -e
+          [[ "$OWNER_KEY_HASH" =~ ^[a-f0-9]{64}$ ]]
+          [[ "$JWT_SECRET" =~ ^[a-f0-9]{64}$ ]]
+          test "$OWNER_EMAIL" = "contact@slickk.online"
+          echo "PASS: Required secret formats validated"
+      - name: Deploy Worker with authentication secrets
+        uses: cloudflare/wrangler-action@v3
+        env:
+          OWNER_KEY_HASH: ${{ secrets.OWNER_KEY_HASH }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
         with:
+          secrets: |
+            OWNER_KEY_HASH
+            JWT_SECRET
+            OWNER_EMAIL
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: worker
