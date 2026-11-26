@@ -1,0 +1,89 @@
+name: Inspect Argon2 WASM
+
+on:
+  push:
+    branches:
+      - milestone-2-auth-schema
+    paths:
+      - '.github/workflows/inspect-argon2-wasm.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install isolated dependency
+        run: |
+          npm ci
+          npm install --save-exact hash-wasm@4.13.0
+
+      - name: Inspect package structure
+        run: |
+          echo "=== PACKAGE METADATA ==="
+          cat node_modules/hash-wasm/package.json
+
+          echo "=== PACKAGE FILES ==="
+          find node_modules/hash-wasm -maxdepth 3 -type f
+
+          echo "=== WASM MODULE FILES ==="
+          find node_modules/hash-wasm -name '*.wasm'
+
+      - name: Inspect WebAssembly loader
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path("node_modules/hash-wasm")
+
+          patterns = [
+              r"WebAssembly\.compile",
+              r"WebAssembly\.instantiate",
+              r"WebAssembly\.Module",
+              r"wasmCache",
+              r"getWasmModule"
+          ]
+
+          for p in root.rglob("*"):
+              if p.suffix not in (".js", ".ts", ".mjs", ".cjs"):
+                  continue
+
+              if p.name.endswith(".min.js"):
+                  continue
+
+              if p.stat().st_size > 5000000:
+                  continue
+
+              s = p.read_text(errors="replace")
+
+              for pattern in patterns:
+                  matches = list(re.finditer(pattern, s))
+
+                  for m in matches[:3]:
+                      print("FILE:", p)
+                      print("PATTERN:", pattern)
+                      print(s[max(0,m.start()-250):m.end()+350])
+                      print("---")
+
+          print("PASS: WASM loader inspection completed")
+          PY
+
+      - name: Preserve candidate package for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: smail-argon2-wasm-source
+          path: worker/node_modules/hash-wasm/
