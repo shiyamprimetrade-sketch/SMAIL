@@ -5,6 +5,8 @@ on:
     branches:
       - milestone-2-auth-schema
     paths:
+      - 'worker/package.json'
+      - 'worker/package-lock.json'
       - 'worker/src/middleware/**'
       - 'worker/migrations/**'
       - 'worker/test/runtime/**'
