@@ -1,0 +1,84 @@
+name: Verify Argon2 Reference
+
+on:
+  push:
+    branches:
+      - milestone-2-auth-schema
+    paths:
+      - '.github/workflows/verify-argon2-reference.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install independent reference implementation
+        run: |
+          python -m pip install argon2-cffi
+          python -m pip show argon2-cffi
+
+      - name: Validate independent Argon2id reference
+        run: |
+          python - <<'PY'
+          import base64
+          import hmac
+          import json
+          from argon2.low_level import hash_secret_raw, Type
+
+          password = b"synthetic-argon2-test-2026"
+          salt = bytes([42] * 16)
+
+          expected = base64.b64decode(
+              "g2AvZAG00H6APDIP7D7ZWvvl1rDG8lCwKPhlKBaa5Ng="
+          )
+
+          actual = hash_secret_raw(
+              secret=password,
+              salt=salt,
+              time_cost=2,
+              memory_cost=19456,
+              parallelism=1,
+              hash_len=32,
+              type=Type.ID,
+              version=19
+          )
+
+          incorrect = hash_secret_raw(
+              secret=b"incorrect-password",
+              salt=salt,
+              time_cost=2,
+              memory_cost=19456,
+              parallelism=1,
+              hash_len=32,
+              type=Type.ID,
+              version=19
+          )
+
+          assert hmac.compare_digest(actual, expected)
+          assert not hmac.compare_digest(incorrect, expected)
+
+          print(json.dumps({
+              "ok": True,
+              "algorithm": "Argon2id",
+              "version": 19,
+              "memoryKiB": 19456,
+              "iterations": 2,
+              "parallelism": 1,
+              "referenceMatch": True,
+              "incorrectPasswordRejected": True,
+              "expectedHex": expected.hex(),
+              "actualHex": actual.hex()
+          }))
+
+          print("PASS: Independent Argon2id reference matched")
+          PY
