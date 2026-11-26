@@ -1,0 +1,116 @@
+name: Test Inbound Runtime
+
+on:
+  push:
+    branches:
+      - milestone-3-inbound-email
+    paths:
+      - 'worker/**'
+      - '.github/workflows/test-inbound-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify TypeScript
+        run: npm run typecheck
+
+      - name: Verify complete inbound email pipeline
+        run: |
+          set -euo pipefail
+
+          STATE=$(mktemp -d)
+          PID=""
+
+          cleanup() {
+            if [ -n "$PID" ]; then
+              kill "$PID" 2>/dev/null || true
+              wait "$PID" 2>/dev/null || true
+            fi
+
+            rm -rf "$STATE"
+          }
+
+          trap cleanup EXIT
+
+          npx --no-install wrangler d1 migrations apply \
+            smail-inbound-test \
+            --local \
+            --config test/runtime/inbound-wrangler.toml \
+            --persist-to "$STATE"
+
+          npx --no-install wrangler dev \
+            --local \
+            --config test/runtime/inbound-wrangler.toml \
+            --persist-to "$STATE" \
+            --ip 127.0.0.1 \
+            --port 8796 \
+            > /tmp/inbound-runtime.log 2>&1 &
+
+          PID=$!
+          READY=0
+
+          for i in $(seq 1 60); do
+            if grep -q "Ready on" /tmp/inbound-runtime.log; then
+              READY=1
+              break
+            fi
+
+            sleep 1
+          done
+
+          test "$READY" = "1"
+
+          STATUS=$(curl -sS \
+            --max-time 90 \
+            -o /tmp/inbound-result.json \
+            -w '%{http_code}' \
+            http://127.0.0.1:8796/)
+
+          cat /tmp/inbound-result.json
+          echo
+
+          test "$STATUS" = "200"
+
+          python3 - <<'PY'
+          import json
+
+          with open("/tmp/inbound-result.json") as f:
+              result = json.load(f)
+
+          assert result["ok"] is True
+          assert result["passed"] == 42
+          assert result["total"] == 42
+
+          for name, passed in result["checks"].items():
+              assert passed, name
+              print("PASS:", name)
+
+          print("INBOUND_RUNTIME_PASSED=42")
+          print("INBOUND_RUNTIME_FAILED=0")
+          PY
+
+      - name: Runtime diagnostics
+        if: failure()
+        run: |
+          cat /tmp/inbound-runtime.log || true
+          cat /tmp/inbound-result.json || true
