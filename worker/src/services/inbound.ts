@@ -22,7 +22,9 @@ export async function prepareInboundEmail(
     envelopeFrom,
   );
 
-  const html = sanitizeEmailHtml(parsed.html);
+  // Normalize trailing MIME whitespace after sanitization.
+  // Whitespace-only output must not count as safe HTML.
+  const html = sanitizeEmailHtml(parsed.html).trimEnd();
 
   const htmlRemoved =
     parsed.html.length > 0 &&
