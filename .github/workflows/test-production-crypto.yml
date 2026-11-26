@@ -1,0 +1,130 @@
+name: Test Production Cryptography
+
+on:
+  push:
+    branches:
+      - milestone-2-auth-schema
+    paths:
+      - '.github/workflows/test-production-crypto.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smail-production-crypto
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    if: github.ref == 'refs/heads/milestone-2-auth-schema'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PROBE_NAME: smail-crypto-${{ github.run_id }}-${{ github.run_attempt }}
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify TypeScript
+        run: npm run typecheck
+
+      - name: Deploy isolated probe
+        id: deploy
+        run: |
+          set -o pipefail
+
+          npx wrangler deploy \
+            --config test/production/wrangler.toml \
+            --name "$PROBE_NAME" \
+            2>&1 | tee /tmp/smail-probe-deploy.log
+
+          URL=$(grep -oE "https://${PROBE_NAME}\.[a-zA-Z0-9.-]+\.workers\.dev" \
+            /tmp/smail-probe-deploy.log | head -n 1)
+
+          test -n "$URL"
+
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Verify hosted password authentication
+        env:
+          PROBE_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          set -e
+
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error \
+              --max-time 20 \
+              "$PROBE_URL/correct" \
+              -o /tmp/correct.json; then
+              break
+            fi
+            sleep 5
+          done
+
+          test -s /tmp/correct.json
+
+          jq -e \
+            '.ok == true and .verified == true and .iterations == 210000' \
+            /tmp/correct.json
+
+          for attempt in $(seq 1 5); do
+
+            curl --fail --silent --show-error \
+              --max-time 20 \
+              "$PROBE_URL/correct" \
+              -o /tmp/correct.json
+
+            curl --fail --silent --show-error \
+              --max-time 20 \
+              "$PROBE_URL/incorrect" \
+              -o /tmp/incorrect.json
+
+            jq -e \
+              '.ok == true and .verified == true and .iterations == 210000' \
+              /tmp/correct.json
+
+            jq -e \
+              '.ok == true and .verified == false and .iterations == 210000' \
+              /tmp/incorrect.json
+
+            echo "=== ROUND $attempt ==="
+            cat /tmp/correct.json
+            echo
+            cat /tmp/incorrect.json
+            echo
+
+          done
+
+          echo "PASS: 10 hosted password verification checks"
+
+      - name: Delete temporary Worker
+        if: always() && steps.deploy.outcome != 'skipped'
+        run: |
+          npx wrangler delete \
+            --config test/production/wrangler.toml \
+            --name "$PROBE_NAME" \
+            --force
+
+          echo "PASS: Temporary Worker cleanup completed"
+
+      - name: Verify original production health
+        if: always()
+        run: |
+          curl --fail --silent --show-error \
+            --max-time 20 \
+            https://api.slickk.online/health \
+            | jq -e '. == {"ok":true}'
