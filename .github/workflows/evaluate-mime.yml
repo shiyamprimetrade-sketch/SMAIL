@@ -1,0 +1,98 @@
+name: Evaluate MIME Parser
+
+on:
+  push:
+    branches:
+      - milestone-3-inbound-email
+    paths:
+      - '.github/workflows/evaluate-mime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install baseline dependencies
+        run: npm ci
+
+      - name: Evaluate postal-mime
+        run: |
+          npm view postal-mime version
+          npm view postal-mime license
+          npm view postal-mime dependencies
+          npm install --save-exact postal-mime
+          npm ls postal-mime
+
+      - name: Verify dependency security
+        run: |
+          npm audit --omit=dev
+          npm audit
+
+      - name: Test MIME parsing
+        run: |
+          node --input-type=module <<'JS'
+          import PostalMime from 'postal-mime';
+          import assert from 'node:assert/strict';
+
+          const raw = [
+            'From: Example Sender <sender@example.com>',
+            'To: contact@slickk.online',
+            'Subject: SMAIL MIME Test',
+            'Message-ID: <smail-test@example.com>',
+            'MIME-Version: 1.0',
+            'Content-Type: text/plain; charset=UTF-8',
+            '',
+            'Hello from SMAIL.'
+          ].join('\r\n');
+
+          const email = await PostalMime.parse(raw);
+
+          assert.equal(email.subject, 'SMAIL MIME Test');
+          console.log('PASS: Subject parsing');
+
+          assert.equal(email.from.address, 'sender@example.com');
+          console.log('PASS: Sender parsing');
+
+          assert.equal(email.to[0].address, 'contact@slickk.online');
+          console.log('PASS: Recipient parsing');
+
+          assert.equal(email.messageId, '<smail-test@example.com>');
+          console.log('PASS: Message-ID parsing');
+
+          assert.ok(email.text.includes('Hello from SMAIL.'));
+          console.log('PASS: Plain text parsing');
+
+          assert.equal(email.attachments.length, 0);
+          console.log('PASS: Attachment structure');
+
+          console.log('MIME PARSER: 6/6 PASS');
+          JS
+
+      - name: Verify existing functionality
+        run: |
+          npm run typecheck
+          npm test
+
+      - name: Export evaluated dependencies
+        uses: actions/upload-artifact@v4
+        with:
+          name: smail-mime-dependencies
+          path: |
+            worker/package.json
+            worker/package-lock.json
+          retention-days: 7
