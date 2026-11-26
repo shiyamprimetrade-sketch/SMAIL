@@ -1,0 +1,60 @@
+name: Audit SMAIL Dependencies
+
+on:
+  push:
+    branches:
+      - milestone-2-auth-schema
+    paths:
+      - worker/package.json
+      - worker/package-lock.json
+      - .github/workflows/audit-dependencies.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Inspect installed versions
+        run: |
+          node --version
+          npm --version
+          npx wrangler --version
+          npm ls --depth=0
+          npm ls workerd
+
+      - name: Inspect available dependency versions
+        run: |
+          npm view wrangler version engines
+          npm view hono version
+          npm view @cloudflare/workers-types version
+          npm view vitest version
+          npm view typescript version
+
+      - name: Production dependency security audit
+        run: npm audit --omit=dev
+
+      - name: Complete dependency security audit
+        if: always()
+        run: npm audit
+
+      - name: Inspect outdated dependencies
+        if: always()
+        run: npm outdated || true
