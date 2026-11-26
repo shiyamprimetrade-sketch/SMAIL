@@ -1,0 +1,130 @@
+name: Test Hosted MIME Engine
+
+on:
+  push:
+    branches:
+      - milestone-3-inbound-email
+    paths:
+      - 'worker/test/mime-hosted/**'
+      - '.github/workflows/test-mime-hosted.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smail-hosted-mime
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PROBE_NAME: smail-mime-${{ github.run_id }}-${{ github.run_attempt }}
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify TypeScript
+        run: npm run typecheck
+
+      - name: Deploy isolated MIME probe
+        id: deploy
+        run: |
+          set -euo pipefail
+
+          npx wrangler deploy \
+            --config test/mime-hosted/wrangler.toml \
+            --name "$PROBE_NAME" \
+            2>&1 | tee /tmp/mime-deploy.log
+
+          URL=$(grep -oE "https://${PROBE_NAME}\.[a-zA-Z0-9.-]+\.workers\.dev" /tmp/mime-deploy.log | head -n 1)
+
+          test -n "$URL"
+
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Verify hosted MIME processing
+        env:
+          PROBE_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          set -euo pipefail
+
+          sleep 10
+
+          PASSED=0
+          FAILED=0
+
+          for TEST in small unicode body attachment-small attachment-limit attachment-overflow raw-limit raw-overflow; do
+
+            echo "=== TEST: $TEST ==="
+
+            rm -f /tmp/mime-hosted-result.json
+
+            STATUS=$(curl -sS --max-time 30 \
+              -w '%{http_code}' \
+              "$PROBE_URL/$TEST" \
+              -o /tmp/mime-hosted-result.json) || STATUS=000
+
+            echo "HTTP_STATUS=$STATUS"
+
+            cat /tmp/mime-hosted-result.json 2>/dev/null || true
+
+            echo
+
+            if [ "$STATUS" = "200" ] && \
+              jq -e '.ok == true' /tmp/mime-hosted-result.json >/dev/null; then
+
+              echo "PASS: $TEST"
+              PASSED=$((PASSED + 1))
+
+            else
+
+              echo "FAIL: $TEST"
+              FAILED=$((FAILED + 1))
+
+            fi
+          done
+
+          echo "HOSTED_MIME_PASSED=$PASSED"
+          echo "HOSTED_MIME_FAILED=$FAILED"
+
+          test "$FAILED" = 0
+
+      - name: Delete temporary Worker
+        if: always() && steps.deploy.outcome != 'skipped'
+        run: |
+          set -euo pipefail
+
+          RESOURCE="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$PROBE_NAME"
+
+          curl -fsS --max-time 30 \
+            -X DELETE \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "$RESOURCE" \
+            -o /tmp/mime-delete.json
+
+          jq -e '.success == true' /tmp/mime-delete.json
+
+          echo "PASS: Temporary Worker deleted"
+
+      - name: Verify original production health
+        if: always()
+        run: |
+          curl -fsS --max-time 20 \
+            https://api.slickk.online/health \
+            | jq -e '. == {"ok":true}'
