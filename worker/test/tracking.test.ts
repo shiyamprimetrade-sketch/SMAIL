@@ -31,7 +31,7 @@ describe('Tracking pixel detection', () => {
   ])('detects tracking image %#', (attrs) => {
     expect(
       isTrackingPixel(
-        attrs as Record<string, string>
+        attrs
       )
     ).toBe(true);
   });
@@ -48,7 +48,7 @@ describe('Tracking pixel detection', () => {
   ])('preserves normal image %#', (attrs) => {
     expect(
       isTrackingPixel(
-        attrs as Record<string, string>
+        attrs
       )
     ).toBe(false);
   });

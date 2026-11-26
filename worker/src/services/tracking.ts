@@ -1,4 +1,4 @@
-type ImageAttributes = Record<string, string>;
+type ImageAttributes = Record<string, string | undefined>;
 
 function dimension(
   value: string | undefined,
