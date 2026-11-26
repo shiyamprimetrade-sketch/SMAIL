@@ -43,22 +43,24 @@ jobs:
           [[ "$JWT_SECRET" =~ ^[a-f0-9]{64}$ ]]
           test "$OWNER_EMAIL" = "contact@slickk.online"
           echo "PASS: Required secret formats validated"
-      - name: Deploy Worker with authentication secrets
-        uses: cloudflare/wrangler-action@v3
+      - name: Deploy Worker and secrets together
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           OWNER_KEY_HASH: ${{ secrets.OWNER_KEY_HASH }}
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           OWNER_EMAIL: ${{ secrets.OWNER_EMAIL }}
-        with:
-          secrets: |
-            OWNER_KEY_HASH
-            JWT_SECRET
-            OWNER_EMAIL
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          workingDirectory: worker
-          wranglerVersion: '4.168.0'
-          command: deploy
+        run: |
+          set -euo pipefail
+          umask 077
+          SECRET_FILE="$(mktemp)"
+          trap 'rm -f "$SECRET_FILE"' EXIT
+          export SECRET_FILE
+          python3 -c 'import os,json; keys=("OWNER_KEY_HASH","JWT_SECRET","OWNER_EMAIL"); json.dump({k:os.environ[k] for k in keys},open(os.environ["SECRET_FILE"],"w"))'
+          npx --no-install wrangler deploy --help > /tmp/smail-deploy-help.txt
+          grep -q -- "--secrets-file" /tmp/smail-deploy-help.txt
+          npx --no-install wrangler deploy --secrets-file "$SECRET_FILE"
+          echo "PASS: Worker deployed with authentication secrets"
       - name: Verify public HTTPS health
         run: |
           for attempt in $(seq 1 18); do
