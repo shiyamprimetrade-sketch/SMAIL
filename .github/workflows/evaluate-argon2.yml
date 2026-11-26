@@ -1,0 +1,112 @@
+name: Evaluate Argon2id
+
+on:
+  push:
+    branches:
+      - milestone-2-auth-schema
+    paths:
+      - '.github/workflows/evaluate-argon2.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install baseline dependencies
+        run: npm ci
+
+      - name: Inspect candidate package
+        run: |
+          npm view hash-wasm version license repository engines --json
+
+      - name: Install candidate in isolated runner
+        run: |
+          npm install --save-exact hash-wasm
+          npm ls hash-wasm
+
+      - name: Audit dependencies
+        run: npm audit
+
+      - name: Verify Argon2id functionality
+        run: |
+          node --input-type=module <<'JS'
+          import { argon2id, argon2Verify } from 'hash-wasm';
+          import assert from 'node:assert/strict';
+          import { performance } from 'node:perf_hooks';
+
+          const password = 'synthetic-argon2-test-2026';
+          const salt = new Uint8Array(16).fill(42);
+
+          const start = performance.now();
+
+          const hash = await argon2id({
+            password,
+            salt,
+            parallelism: 1,
+            iterations: 2,
+            memorySize: 19456,
+            hashLength: 32,
+            outputType: 'encoded'
+          });
+
+          const hashMs = performance.now() - start;
+
+          const verifyStart = performance.now();
+
+          const correct = await argon2Verify({
+            password,
+            hash
+          });
+
+          const verifyMs = performance.now() - verifyStart;
+
+          const incorrect = await argon2Verify({
+            password: 'incorrect-password',
+            hash
+          });
+
+          assert.equal(correct, true);
+          assert.equal(incorrect, false);
+          assert.ok(hash.startsWith('$argon2id$v=19$'));
+
+          console.log(JSON.stringify({
+            ok: true,
+            algorithm: 'argon2id',
+            memoryKiB: 19456,
+            iterations: 2,
+            parallelism: 1,
+            correctPasswordAccepted: correct,
+            incorrectPasswordRejected: !incorrect,
+            hashMs,
+            verifyMs,
+            syntheticHash: hash
+          }));
+
+          console.log('PASS: Argon2id candidate functionality');
+          JS
+
+      - name: Verify existing implementation
+        run: |
+          npm run typecheck
+          npm test
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: smail-argon2-candidate
+          path: |
+            worker/package.json
+            worker/package-lock.json
