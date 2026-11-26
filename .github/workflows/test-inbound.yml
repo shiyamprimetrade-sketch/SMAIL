@@ -1,0 +1,56 @@
+name: Test Inbound Email
+
+on:
+  push:
+    branches:
+      - milestone-3-inbound-email
+    paths:
+      - 'worker/**'
+      - '.github/workflows/test-inbound.yml'
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'worker/**'
+      - '.github/workflows/test-inbound.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Verify database regression tests
+        run: |
+          python -m unittest discover \
+          -s worker/test -p "test_*.py" -v
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install locked dependencies
+        working-directory: worker
+        run: npm ci
+
+      - name: Verify dependency security
+        working-directory: worker
+        run: npm audit
+
+      - name: Verify TypeScript
+        working-directory: worker
+        run: npm run typecheck
+
+      - name: Execute Worker tests
+        working-directory: worker
+        run: npm test
