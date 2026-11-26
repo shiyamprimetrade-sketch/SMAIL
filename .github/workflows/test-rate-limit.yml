@@ -65,7 +65,7 @@ jobs:
 
               cat /tmp/smail-rate-limit-result.json
 
-              python3 -c 'import json; d=json.load(open("/tmp/smail-rate-limit-result.json")); assert d["ok"] is True, d; assert d["passed"] == d["total"] == 11, d'
+              python3 -c 'import json; d=json.load(open("/tmp/smail-rate-limit-result.json")); assert d["ok"] is True, d; assert d["passed"] == d["total"] == 12, d'
 
               exit 0
             fi

@@ -152,6 +152,48 @@ export default {
       checks.expiredAttemptsRemoved =
         remaining?.count === 1;
 
+
+      const mixedIp = '192.0.2.60';
+
+      const mixed = await Promise.all(
+        Array.from({ length: 5 }, () =>
+          reserveLoginAttempt(db, mixedIp, now)
+        )
+      );
+
+      const reserved = mixed.filter(
+        result => result.allowed
+      );
+
+      if (reserved.length !== 5) {
+        throw new Error('Mixed reservation failed');
+      }
+
+      const first = reserved[0];
+
+      if (!first.allowed) {
+        throw new Error('Reservation unavailable');
+      }
+
+      await recordLoginFailure(
+        db, mixedIp, first.attemptId, now
+      );
+
+      for (const result of reserved.slice(1)) {
+        if (result.allowed) {
+          await recordLoginSuccess(
+            db, mixedIp, result.attemptId
+          );
+        }
+      }
+
+      const mixedNext = await reserveLoginAttempt(
+        db, mixedIp, now
+      );
+
+      checks.mixedAttemptsDoNotCauseFalseBlock =
+        mixedNext.allowed;
+
       const passed = Object.values(checks)
         .filter(Boolean).length;
 

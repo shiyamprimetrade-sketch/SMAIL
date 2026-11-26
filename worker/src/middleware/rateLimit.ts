@@ -36,8 +36,8 @@ export async function reserveLoginAttempt(
 
     db.prepare(`
       INSERT INTO login_attempts
-        (ip, at, attempt_id)
-      SELECT ?, ?, ?
+        (ip, at, attempt_id, failed)
+      SELECT ?, ?, ?, 0
       WHERE NOT EXISTS (
         SELECT 1 FROM login_blocks
         WHERE ip = ? AND blocked_until > ?
@@ -87,7 +87,7 @@ export async function recordLoginFailure(
   await db.batch([
     db.prepare(`
       UPDATE login_attempts
-      SET at = ?
+      SET at = ?, failed = 1
       WHERE ip = ? AND attempt_id = ?
     `).bind(now, ip, attemptId),
 
@@ -98,7 +98,7 @@ export async function recordLoginFailure(
       WHERE (
         SELECT COUNT(*)
         FROM login_attempts
-        WHERE ip = ? AND at > ?
+        WHERE ip = ? AND at > ? AND failed = 1
       ) >= ?
       ON CONFLICT(ip) DO UPDATE SET
         blocked_until = MAX(
