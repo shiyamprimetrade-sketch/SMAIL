@@ -1,0 +1,11 @@
+name = "smail-threading-runtime-test"
+main = "threading-probe.ts"
+compatibility_date = "2026-11-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "smail-threading-test"
+database_id = "00000000-0000-4000-8000-000000000004"
+migrations_dir = "../../migrations"
