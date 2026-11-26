@@ -1,0 +1,270 @@
+name: Test Hosted Persistence
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: smail-hosted-persistence
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: worker
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PROBE_NAME: smail-persist-${{ github.run_id }}-${{ github.run_attempt }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Verify TypeScript
+        run: npm run typecheck
+
+      - name: Create isolated hosted database
+        run: |
+          set -euo pipefail
+
+          API="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID"
+
+          BODY=$(jq -n \
+            --arg name "$PROBE_NAME" \
+            '{name:$name}')
+
+          curl --fail-with-body -sS \
+            -X POST "$API/d1/database" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            -H "Content-Type: application/json" \
+            --data "$BODY" \
+            > /tmp/smail-hosted-db.json
+
+          jq -e '.success == true' \
+            /tmp/smail-hosted-db.json
+
+          DB_ID=$(jq -er '.result.uuid' \
+            /tmp/smail-hosted-db.json)
+
+          echo "PROBE_DB_ID=$DB_ID" >> "$GITHUB_ENV"
+
+          cat > test/persistence-hosted/wrangler.toml <<CONFIG
+          name = "$PROBE_NAME"
+          main = "index.ts"
+          compatibility_date = "2026-11-01"
+          compatibility_flags = ["nodejs_compat"]
+          workers_dev = true
+
+          [[d1_databases]]
+          binding = "DB"
+          database_name = "$PROBE_NAME"
+          database_id = "$DB_ID"
+          migrations_dir = "../../migrations"
+          CONFIG
+
+          echo "ISOLATED_DATABASE_CREATED=PASS"
+
+      - name: Apply isolated database migrations
+        run: |
+          set -euo pipefail
+
+          npx --no-install wrangler d1 migrations apply \
+            "$PROBE_NAME" \
+            --remote \
+            --config test/persistence-hosted/wrangler.toml
+
+          echo "HOSTED_MIGRATIONS=PASS"
+
+      - name: Deploy protected temporary Worker
+        run: |
+          set -euo pipefail
+          umask 077
+
+          PROBE_KEY=$(openssl rand -hex 32)
+
+          echo "::add-mask::$PROBE_KEY"
+          echo "PROBE_KEY=$PROBE_KEY" >> "$GITHUB_ENV"
+
+          SECRET_FILE=$(mktemp)
+
+          trap 'rm -f "$SECRET_FILE"' EXIT
+
+          jq -n \
+            --arg key "$PROBE_KEY" \
+            '{PROBE_KEY:$key}' \
+            > "$SECRET_FILE"
+
+          npx --no-install wrangler deploy \
+            --config test/persistence-hosted/wrangler.toml \
+            --secrets-file "$SECRET_FILE" \
+            2>&1 | tee /tmp/smail-hosted-deploy.log
+
+          URL=$(grep -Eo \
+            "https://${PROBE_NAME}\.[a-zA-Z0-9.-]+\.workers\.dev" \
+            /tmp/smail-hosted-deploy.log \
+            | head -n 1)
+
+          test -n "$URL"
+
+          echo "PROBE_URL=$URL" >> "$GITHUB_ENV"
+
+          echo "TEMPORARY_WORKER_DEPLOYED=PASS"
+
+      - name: Verify hosted email persistence
+        run: |
+          set -euo pipefail
+          umask 077
+
+          HEADER_FILE=$(mktemp)
+
+          trap 'rm -f "$HEADER_FILE"' EXIT
+
+          printf 'Authorization: Bearer %s\n' \
+            "$PROBE_KEY" > "$HEADER_FILE"
+
+          READY=0
+
+          sleep 15
+
+          for i in $(seq 1 20); do
+            STATUS=$(curl -sS \
+              --max-time 20 \
+              -X POST \
+              -H "@$HEADER_FILE" \
+              -o /tmp/smail-ready.json \
+              -w '%{http_code}' \
+              "$PROBE_URL/ready" || true)
+
+            if [ "$STATUS" = "200" ]; then
+              READY=1
+              break
+            fi
+
+            sleep 3
+          done
+
+          test "$READY" = "1"
+
+          STATUS=$(curl -sS \
+            --max-time 20 \
+            -X POST \
+            -o /dev/null \
+            -w '%{http_code}' \
+            "$PROBE_URL/ready")
+
+          test "$STATUS" = "401"
+
+          echo "UNAUTHORIZED_ACCESS_BLOCKED=PASS"
+
+          verify() {
+            local path="$1"
+            local expected="$2"
+
+            STATUS=$(curl -sS \
+              --max-time 120 \
+              -X POST \
+              -H "@$HEADER_FILE" \
+              -o "/tmp/smail-$path.json" \
+              -w '%{http_code}' \
+              "$PROBE_URL/$path")
+
+            cat "/tmp/smail-$path.json"
+            echo
+
+            test "$STATUS" = "200"
+
+            jq -e \
+              --argjson expected "$expected" \
+              '.ok == true and
+               .passed == $expected and
+               .total == $expected' \
+              "/tmp/smail-$path.json"
+
+            echo "HOSTED_${path^^}_PASSED=$expected"
+          }
+
+          verify inbound 42
+          verify attachment 9
+
+          echo "HOSTED_PERSISTENCE_PASSED=52"
+          echo "HOSTED_PERSISTENCE_FAILED=0"
+
+      - name: Remove temporary hosted resources
+        if: always()
+        run: |
+          set -uo pipefail
+
+          API="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID"
+
+          FAILED=0
+
+          if curl -sS \
+            -X DELETE \
+            "$API/workers/scripts/$PROBE_NAME" \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            > /tmp/smail-worker-cleanup.json &&
+            jq -e '.success == true' \
+              /tmp/smail-worker-cleanup.json; then
+
+            echo "TEMPORARY_WORKER_REMOVED=PASS"
+          else
+            echo "TEMPORARY_WORKER_CLEANUP_UNCONFIRMED"
+            FAILED=1
+          fi
+
+          DB_ID="${PROBE_DB_ID:-}"
+
+          if [ -z "$DB_ID" ] &&
+             [ -f /tmp/smail-hosted-db.json ]; then
+            DB_ID=$(jq -r \
+              '.result.uuid // empty' \
+              /tmp/smail-hosted-db.json)
+          fi
+
+          if [ -n "$DB_ID" ]; then
+            if curl -sS \
+              -X DELETE \
+              "$API/d1/database/$DB_ID" \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              > /tmp/smail-db-cleanup.json &&
+              jq -e '.success == true' \
+                /tmp/smail-db-cleanup.json; then
+
+              echo "TEMPORARY_DATABASE_REMOVED=PASS"
+            else
+              echo "TEMPORARY_DATABASE_CLEANUP_FAILED"
+              FAILED=1
+            fi
+          else
+            echo "DATABASE_CREATION_NOT_CONFIRMED"
+          fi
+
+          exit "$FAILED"
+
+      - name: Verify production remains healthy
+        if: always()
+        run: |
+          set -euo pipefail
+
+          RESULT=$(curl -fsS \
+            --retry 3 \
+            --max-time 20 \
+            https://api.slickk.online/health)
+
+          test "$RESULT" = '{"ok":true}'
+
+          echo "PRODUCTION_HEALTH=PASS"
