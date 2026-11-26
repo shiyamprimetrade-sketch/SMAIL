@@ -1,3 +1,4 @@
+import { settings } from './routes/settings';
 import { requireAuth } from './middleware/auth';
 import type { AppEnv } from './env';
 import { auth } from './routes/auth';
@@ -12,5 +13,7 @@ app.get('/health', (c) => {
 app.notFound((c) => c.json({ error: 'not_found', message: 'Route not found' }, 404));
 app.onError((_error, c) => c.json({ error: 'internal_error', message: 'Internal server error' }, 500));
 app.route('/auth', auth);
+
+app.route('/settings', settings);
 
 export default app;

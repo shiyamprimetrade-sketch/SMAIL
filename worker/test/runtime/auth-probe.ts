@@ -365,6 +365,163 @@ export default {
       checks.revokedAccessTokenRejected =
         revokedAccess.status === 401;
 
+
+      const settingsLogin = await post(
+        '/auth/login',
+        {
+          password,
+          deviceLabel: 'Settings test'
+        },
+        '192.0.2.120'
+      );
+
+      const settingsTokens =
+        await settingsLogin.json() as {
+          accessToken: string;
+          refreshToken: string;
+        };
+
+      async function settingsRequest(
+        method: string,
+        body?: unknown,
+        authenticated = true
+      ) {
+
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json'
+        };
+
+        if (authenticated) {
+          headers.Authorization =
+            'Bearer ' + settingsTokens.accessToken;
+        }
+
+        return app.request(
+          'https://smail.test/settings',
+          {
+            method,
+            headers,
+            body: body === undefined
+              ? undefined
+              : JSON.stringify(body)
+          },
+          testEnv
+        );
+      }
+
+      const initialSettings =
+        await settingsRequest('GET');
+
+      checks.settingsGetSuccessful =
+        initialSettings.status === 200;
+
+      const initialValues =
+        await initialSettings.json() as {
+          signature: string;
+          displayName: string;
+          notificationsEnabled: boolean;
+        };
+
+      checks.settingsDefaultsCorrect =
+        initialValues.signature === '' &&
+        initialValues.displayName === 'S' &&
+        initialValues.notificationsEnabled === true;
+
+      const newSettings = {
+        signature: 'Regards, SMAIL',
+        displayName: 'SMAIL Owner',
+        notificationsEnabled: false
+      };
+
+      const updateSettings =
+        await settingsRequest('PUT', newSettings);
+
+      checks.settingsUpdateSuccessful =
+        updateSettings.status === 200;
+
+      const updatedValues =
+        await updateSettings.json();
+
+      checks.settingsUpdateResponseCorrect =
+        JSON.stringify(updatedValues) ===
+        JSON.stringify(newSettings);
+
+      const persisted =
+        await settingsRequest('GET');
+
+      checks.settingsPersisted =
+        JSON.stringify(await persisted.json()) ===
+        JSON.stringify(newSettings);
+
+      const unauthorizedSettings =
+        await settingsRequest(
+          'GET', undefined, false
+        );
+
+      checks.settingsGetProtected =
+        unauthorizedSettings.status === 401;
+
+      const unauthorizedUpdate =
+        await settingsRequest(
+          'PUT', newSettings, false
+        );
+
+      checks.settingsPutProtected =
+        unauthorizedUpdate.status === 401;
+
+      const invalidType =
+        await settingsRequest('PUT', {
+          ...newSettings,
+          notificationsEnabled: 'false'
+        });
+
+      checks.settingsInvalidTypeRejected =
+        invalidType.status === 400;
+
+      const invalidName =
+        await settingsRequest('PUT', {
+          ...newSettings,
+          displayName: '   '
+        });
+
+      checks.settingsEmptyNameRejected =
+        invalidName.status === 400;
+
+      const oversizedSettings =
+        await settingsRequest('PUT', {
+          ...newSettings,
+          signature: 'x'.repeat(20000)
+        });
+
+      checks.settingsOversizedRejected =
+        oversizedSettings.status === 413;
+
+      const invalidKey =
+        await settingsRequest('PUT', {
+          ...newSettings,
+          ownerEmail: 'other@example.test'
+        });
+
+      checks.settingsUnknownKeyRejected =
+        invalidKey.status === 400;
+
+      const afterInvalid =
+        await settingsRequest('GET');
+
+      checks.settingsInvalidUpdatesPreserveData =
+        JSON.stringify(await afterInvalid.json()) ===
+        JSON.stringify(newSettings);
+
+      await post('/auth/logout', {
+        refreshToken: settingsTokens.refreshToken
+      });
+
+      const revokedSettings =
+        await settingsRequest('GET');
+
+      checks.settingsRevokedSessionRejected =
+        revokedSettings.status === 401;
+
       const passed = Object.values(checks)
         .filter(Boolean).length;
 
