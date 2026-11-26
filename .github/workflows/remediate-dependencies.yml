@@ -1,0 +1,75 @@
+name: Remediate SMAIL Dependencies
+
+on:
+  push:
+    branches:
+      - milestone-2-auth-schema
+    paths:
+      - .github/workflows/remediate-dependencies.yml
+
+permissions:
+  contents: read
+
+jobs:
+  remediate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Update production dependencies
+        run: |
+          npm install --save-exact hono@4.13.22
+
+      - name: Update development dependencies
+        run: |
+          npm install --save-dev --save-exact \
+            wrangler@4.168.0 \
+            vitest@latest \
+            @cloudflare/workers-types@latest
+
+      - name: Verify reproducible installation
+        run: npm ci
+
+      - name: Inspect resolved versions
+        run: |
+          node --version
+          npm ls --depth=0
+          npm ls workerd
+          npx wrangler --version
+          cat package.json
+
+      - name: Production security audit
+        run: npm audit --omit=dev
+
+      - name: Complete security audit
+        if: always()
+        run: npm audit
+
+      - name: TypeScript validation
+        if: always()
+        run: npm run typecheck
+
+      - name: Worker unit tests
+        if: always()
+        run: npm test
+
+      - name: Upload candidate dependency files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smail-remediated-dependencies
+          path: |
+            worker/package.json
+            worker/package-lock.json
+          if-no-files-found: error
+          retention-days: 7
