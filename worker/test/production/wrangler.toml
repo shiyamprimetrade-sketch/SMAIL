@@ -1,0 +1,6 @@
+name = "smail-m002-crypto-verification"
+main = "crypto-probe.ts"
+compatibility_date = "2026-11-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+preview_urls = false
