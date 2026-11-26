@@ -82,13 +82,13 @@ jobs:
           set -euo pipefail
           umask 077
 
-          sleep 10
-
           HEADER_FILE=$(mktemp)
 
           trap 'rm -f "$HEADER_FILE"' EXIT
 
           printf 'Authorization: Bearer %s\n' "$PROBE_KEY" > "$HEADER_FILE"
+
+          sleep 15
 
           STATUS=$(curl -sS --max-time 30 \
             -X POST \
@@ -100,17 +100,80 @@ jobs:
 
           echo "PASS: Unauthorized requests rejected"
 
+          echo "=== WAIT FOR AUTHENTICATED HOSTED READINESS ==="
+
+          READY=0
+
+          for ATTEMPT in $(seq 1 20); do
+
+            STATUS=$(curl -sS --max-time 15 \
+              -X POST \
+              -H @"$HEADER_FILE" \
+              -o /tmp/sanitize-ready.json \
+              -w '%{http_code}' \
+              "$PROBE_URL/basic") || STATUS=000
+
+            echo "READINESS_ATTEMPT=$ATTEMPT HTTP_STATUS=$STATUS"
+
+            if [ "$STATUS" = "200" ] && \
+              jq -e '.ok == true and .test == "/basic"' \
+                /tmp/sanitize-ready.json >/dev/null; then
+
+              READY=1
+              break
+
+            fi
+
+            if [ "$STATUS" = "404" ] && \
+              grep -q 'error code: 1042' /tmp/sanitize-ready.json; then
+              sleep 3
+              continue
+            fi
+
+            if [ "$STATUS" = "000" ]; then
+              sleep 3
+              continue
+            fi
+
+            cat /tmp/sanitize-ready.json || true
+            echo "FAIL: Unexpected readiness response"
+            exit 1
+
+          done
+
+          test "$READY" = "1"
+
+          echo "PASS: Authenticated hosted readiness"
+
           PASSED=0
           FAILED=0
 
           for TEST in basic unicode script encoded-url tracking hidden-image normal-image malformed nesting large-body expansion idempotence; do
 
-            STATUS=$(curl -sS --max-time 30 \
-              -X POST \
-              -H @"$HEADER_FILE" \
-              -o /tmp/sanitize-result.json \
-              -w '%{http_code}' \
-              "$PROBE_URL/$TEST") || STATUS=000
+            for ATTEMPT in $(seq 1 5); do
+
+              rm -f /tmp/sanitize-result.json
+
+              STATUS=$(curl -sS --max-time 30 \
+                -X POST \
+                -H @"$HEADER_FILE" \
+                -o /tmp/sanitize-result.json \
+                -w '%{http_code}' \
+                "$PROBE_URL/$TEST") || STATUS=000
+
+              if [ "$STATUS" = "404" ] && \
+                grep -q 'error code: 1042' /tmp/sanitize-result.json; then
+
+                echo "RETRY: $TEST attempt=$ATTEMPT Cloudflare 1042"
+
+                sleep 3
+                continue
+
+              fi
+
+              break
+
+            done
 
             echo "TEST=$TEST HTTP_STATUS=$STATUS"
 
