@@ -2,7 +2,10 @@ import { Hono } from 'hono';
 
 import type { AppEnv } from '../env';
 
-import { verifyPassword } from '../services/crypto';
+import {
+  isOwnerKey,
+  verifyOwnerKey
+} from '../services/ownerKey';
 
 import {
   createSession,
@@ -144,12 +147,12 @@ auth.post('/login', async c => {
 
   if (
     !body ||
-    typeof body.password !== 'string' ||
-    body.password.length === 0 ||
-    new TextEncoder().encode(body.password).length > 1024 ||
+    !isOwnerKey(body.ownerKey) ||
+    Object.keys(body).length !== 2 ||
     typeof body.deviceLabel !== 'string' ||
     body.deviceLabel.trim().length === 0 ||
-    body.deviceLabel.length > 128
+    body.deviceLabel.length > 128 ||
+    /[\x00-\x1f\x7f]/.test(body.deviceLabel)
   ) {
     return c.json({
       error: 'invalid_request',
@@ -167,7 +170,7 @@ auth.post('/login', async c => {
   }
 
   if (
-    !c.env.PASSWORD_HASH ||
+    !isOwnerKey(c.env.OWNER_KEY_HASH) ||
     !/^[a-fA-F0-9]{64}$/.test(c.env.JWT_SECRET || '')
   ) {
     return c.json({
@@ -193,9 +196,9 @@ auth.post('/login', async c => {
     }, 429);
   }
 
-  const verified = await verifyPassword(
-    body.password,
-    c.env.PASSWORD_HASH
+  const verified = await verifyOwnerKey(
+    body.ownerKey,
+    c.env.OWNER_KEY_HASH
   );
 
   if (!verified) {

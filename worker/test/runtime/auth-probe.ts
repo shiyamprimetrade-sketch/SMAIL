@@ -1,6 +1,6 @@
 import { issueAccessToken } from '../../src/services/jwt';
 import app from '../../src/index';
-import { hashPassword } from '../../src/services/crypto';
+import { hashOwnerKey } from '../../src/services/ownerKey';
 import { verifyAccessToken } from '../../src/services/jwt';
 import { isSessionActive } from '../../src/services/sessions';
 import type { Env } from '../../src/env';
@@ -12,7 +12,7 @@ export default {
   ): Promise<Response> {
 
     const checks: Record<string, boolean> = {};
-    const password = 'SMAIL-synthetic-test-password';
+    const ownerKey = '12'.repeat(32);
     const secret = 'ab'.repeat(32);
 
     try {
@@ -27,7 +27,7 @@ export default {
       const testEnv: Env = {
         DB: env.DB,
         JWT_SECRET: secret,
-        PASSWORD_HASH: await hashPassword(password),
+        OWNER_KEY_HASH: await hashOwnerKey(ownerKey),
         OWNER_EMAIL: 'owner@example.test'
       };
 
@@ -56,15 +56,15 @@ export default {
         invalid.status === 400;
 
       const wrong = await post('/auth/login', {
-        password: 'incorrect-password',
+        ownerKey: '34'.repeat(32),
         deviceLabel: 'Test device'
       });
 
-      checks.wrongPasswordRejected =
+      checks.wrongOwnerKeyRejected =
         wrong.status === 401;
 
       const login = await post('/auth/login', {
-        password,
+        ownerKey,
         deviceLabel: 'Test device'
       });
 
@@ -172,7 +172,7 @@ export default {
         revoked.status === 401;
 
       const secondLogin = await post('/auth/login', {
-        password,
+        ownerKey,
         deviceLabel: 'Logout test'
       });
 
@@ -203,7 +203,7 @@ export default {
       for (let i = 0; i < 5; i++) {
 
         const failure = await post('/auth/login', {
-          password: 'wrong-password',
+          ownerKey: '56'.repeat(32),
           deviceLabel: 'Rate limit test'
         }, '192.0.2.200');
 
@@ -216,7 +216,7 @@ export default {
         rejected === 5;
 
       const blocked = await post('/auth/login', {
-        password,
+        ownerKey,
         deviceLabel: 'Blocked device'
       }, '192.0.2.200');
 
@@ -227,7 +227,7 @@ export default {
         Number(blocked.headers.get('Retry-After')) > 0;
 
       const oversized = await post('/auth/login', {
-        password: 'x'.repeat(5000),
+        ownerKey: 'x'.repeat(5000),
         deviceLabel: 'Oversized request'
       });
 
@@ -272,7 +272,7 @@ export default {
       const authorizationLogin = await post(
         '/auth/login',
         {
-          password,
+          ownerKey,
           deviceLabel: 'Authorization test'
         },
         '192.0.2.110'
@@ -399,7 +399,7 @@ export default {
       const settingsLogin = await post(
         '/auth/login',
         {
-          password,
+          ownerKey,
           deviceLabel: 'Settings test'
         },
         '192.0.2.120'
@@ -551,6 +551,108 @@ export default {
 
       checks.settingsRevokedSessionRejected =
         revokedSettings.status === 401;
+
+
+      const invalidLoginCases = [
+        ['legacyPasswordRejected', {
+          password: ownerKey,
+          deviceLabel: 'Legacy login'
+        }],
+        ['missingOwnerKeyRejected', {
+          deviceLabel: 'Missing key'
+        }],
+        ['shortOwnerKeyRejected', {
+          ownerKey: 'ab',
+          deviceLabel: 'Short key'
+        }],
+        ['oversizedOwnerKeyRejected', {
+          ownerKey: 'ab'.repeat(33),
+          deviceLabel: 'Long key'
+        }],
+        ['uppercaseOwnerKeyRejected', {
+          ownerKey: 'AB'.repeat(32),
+          deviceLabel: 'Uppercase key'
+        }],
+        ['nonHexOwnerKeyRejected', {
+          ownerKey: 'zz'.repeat(32),
+          deviceLabel: 'Nonhex key'
+        }],
+        ['numericOwnerKeyRejected', {
+          ownerKey: 123456,
+          deviceLabel: 'Numeric key'
+        }],
+        ['extraLoginFieldRejected', {
+          ownerKey,
+          deviceLabel: 'Extra field',
+          extra: true
+        }],
+        ['mixedCredentialsRejected', {
+          ownerKey,
+          password: ownerKey,
+          deviceLabel: 'Mixed credentials'
+        }],
+        ['nullDeviceLabelRejected', {
+          ownerKey,
+          deviceLabel: 'Invalid\u0000device'
+        }],
+        ['newlineDeviceLabelRejected', {
+          ownerKey,
+          deviceLabel: 'Invalid\ndevice'
+        }],
+        ['emptyDeviceLabelRejected', {
+          ownerKey,
+          deviceLabel: '   '
+        }],
+        ['oversizedDeviceLabelRejected', {
+          ownerKey,
+          deviceLabel: 'x'.repeat(129)
+        }]
+      ] as const;
+
+      for (const [name, body] of invalidLoginCases) {
+        const result = await post(
+          '/auth/login',
+          body,
+          '192.0.2.130'
+        );
+
+        checks[name] = result.status === 400;
+      }
+
+      async function invalidVerifierRequest(
+        verifier: string
+      ) {
+        return app.request(
+          'https://smail.test/auth/login',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'CF-Connecting-IP': '192.0.2.140'
+            },
+            body: JSON.stringify({
+              ownerKey,
+              deviceLabel: 'Verifier test'
+            })
+          },
+          {
+            ...testEnv,
+            OWNER_KEY_HASH: verifier
+          }
+        );
+      }
+
+      const missingVerifier =
+        await invalidVerifierRequest('');
+
+      checks.missingVerifierFailsClosed =
+        missingVerifier.status === 500;
+
+      const malformedVerifier =
+        await invalidVerifierRequest('invalid');
+
+      checks.malformedVerifierFailsClosed =
+        malformedVerifier.status === 500;
 
       const passed = Object.values(checks)
         .filter(Boolean).length;
