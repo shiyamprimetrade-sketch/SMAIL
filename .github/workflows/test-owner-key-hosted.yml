@@ -1,0 +1,112 @@
+name: Test Hosted Owner Key
+
+on:
+  push:
+    branches:
+      - milestone-2-auth-schema
+    paths:
+      - 'worker/test/owner-key-hosted/**'
+      - '.github/workflows/test-owner-key-hosted.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PROBE_NAME: smail-owner-${{ github.run_id }}-${{ github.run_attempt }}
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - name: Deploy isolated owner key probe
+        id: deploy
+        run: |
+          set -eo pipefail
+
+          npx wrangler deploy \
+            --config test/owner-key-hosted/wrangler.toml \
+            --name "$PROBE_NAME" \
+            2>&1 | tee /tmp/owner-deploy.log
+
+          URL=$(grep -oE "https://${PROBE_NAME}\.[a-zA-Z0-9.-]+\.workers\.dev" /tmp/owner-deploy.log | head -n 1)
+
+          test -n "$URL"
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Verify hosted owner key cryptography
+        env:
+          PROBE_URL: ${{ steps.deploy.outputs.url }}
+        run: |
+          set -e
+
+          READY=0
+
+          for attempt in $(seq 1 12); do
+            STATUS=$(curl -sS --max-time 20 \
+              -w '%{http_code}' \
+              "$PROBE_URL/verify" \
+              -o /tmp/owner-result.json) || STATUS=000
+
+            echo "HTTP_STATUS=$STATUS"
+            cat /tmp/owner-result.json 2>/dev/null || true
+            echo
+
+            if [ "$STATUS" = "200" ]; then
+              READY=1
+              break
+            fi
+
+            if [ "$STATUS" = "500" ]; then
+              exit 1
+            fi
+
+            sleep 5
+          done
+
+          test "$READY" = "1"
+
+          jq -e '.ok == true and .passed == 10 and .total == 10' \
+            /tmp/owner-result.json
+
+          echo "PASS: Hosted owner key cryptography 10/10"
+
+      - name: Delete temporary Worker
+        if: always() && steps.deploy.outcome != 'skipped'
+        run: |
+          RESOURCE="https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/$PROBE_NAME"
+
+          curl -sS --max-time 30 \
+            -X DELETE \
+            -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "$RESOURCE" \
+            -o /tmp/delete.json
+
+          cat /tmp/delete.json
+          jq -e '.success == true' /tmp/delete.json
+
+          echo "PASS: Temporary Worker deleted"
+
+      - name: Verify original production health
+        if: always()
+        run: |
+          curl -fsS --max-time 20 \
+            https://api.slickk.online/health \
+            | jq -e '. == {"ok":true}'
