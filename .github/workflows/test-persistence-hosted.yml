@@ -1,6 +1,11 @@
 name: Test Hosted Persistence
 
 on:
+  push:
+    branches:
+      - milestone-3-inbound-email
+    paths:
+      - '.github/workflows/test-persistence-hosted.yml'
   workflow_dispatch:
 
 permissions:
