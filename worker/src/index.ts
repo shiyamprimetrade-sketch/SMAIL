@@ -1,7 +1,10 @@
+import { requireAuth } from './middleware/auth';
 import type { AppEnv } from './env';
 import { auth } from './routes/auth';
 import { Hono } from 'hono';
 const app = new Hono<AppEnv>();
+
+app.use('*', requireAuth);
 app.get('/health', (c) => {
   c.header('Cache-Control', 'no-store');
   return c.json({ ok: true });

@@ -9,7 +9,7 @@ describe('Milestone 1', () => {
   });
   it('rejects unknown routes', async () => {
     const response = await app.request('/messages');
-    expect(response.status).toBe(404);
-    expect(await response.json()).toEqual({error:'not_found',message:'Route not found'});
+    expect(response.status).toBe(401);
+    expect(await response.json()).toEqual({error:'unauthorized',message:'Authentication required'});
   });
 });
