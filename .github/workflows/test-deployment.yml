@@ -1,0 +1,62 @@
+name: Test SMAIL Deployment Compatibility
+
+on:
+  push:
+    branches: [milestone-2-auth-schema]
+    paths:
+      - '.github/workflows/test-deployment.yml'
+      - '.github/workflows/deploy-worker.yml'
+      - 'worker/package.json'
+      - 'worker/package-lock.json'
+      - 'worker/wrangler.toml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify Wrangler compatibility
+        run: |
+          set -euo pipefail
+          npx --no-install wrangler --version
+          npx --no-install wrangler deploy --help > /tmp/deploy-help.txt
+          grep -q -- "--secrets-file" /tmp/deploy-help.txt
+          echo "PASS: Secrets-file deployment supported"
+
+      - name: Validate deployment bundle
+        run: |
+          set -euo pipefail
+          umask 077
+          SECRET_FILE="$(mktemp)"
+          trap 'rm -f "$SECRET_FILE"' EXIT
+          export SECRET_FILE
+          python3 -c 'import os,json; json.dump({"OWNER_KEY_HASH":"ab"*32,"JWT_SECRET":"cd"*32,"OWNER_EMAIL":"owner@example.test"},open(os.environ["SECRET_FILE"],"w"))'
+          npx --no-install wrangler deploy \
+            --dry-run \
+            --secrets-file "$SECRET_FILE" \
+            --outdir /tmp/smail-release-bundle
+          echo "PASS: Deployment dry run completed"
+
+      - name: Verify TypeScript
+        run: npm run typecheck
+
+      - name: Verify Worker tests
+        run: npm test
