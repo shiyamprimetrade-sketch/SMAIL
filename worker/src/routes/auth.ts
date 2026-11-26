@@ -80,11 +80,23 @@ async function readObject(
       offset += chunk.byteLength;
     }
 
-    const value: unknown = JSON.parse(
-      new TextDecoder('utf-8', {
-        fatal: true
-      }).decode(bytes)
-    );
+    const decoded = new TextDecoder(
+      'utf-8'
+    ).decode(bytes);
+
+    const encoded = new TextEncoder()
+      .encode(decoded);
+
+    if (
+      encoded.length !== bytes.length ||
+      encoded.some(
+        (byte, index) => byte !== bytes[index]
+      )
+    ) {
+      return null;
+    }
+
+    const value: unknown = JSON.parse(decoded);
 
     if (
       typeof value !== 'object' ||
