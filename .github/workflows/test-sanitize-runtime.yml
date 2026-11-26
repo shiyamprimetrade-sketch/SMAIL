@@ -1,0 +1,104 @@
+name: Test Sanitizer Runtime
+
+on:
+  push:
+    branches:
+      - milestone-3-inbound-email
+    paths:
+      - 'worker/src/services/sanitize.ts'
+      - 'worker/src/services/tracking.ts'
+      - 'worker/test/runtime/sanitize-*'
+      - 'worker/package.json'
+      - 'worker/package-lock.json'
+      - '.github/workflows/test-sanitize-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: worker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install locked dependencies
+        run: npm ci
+
+      - name: Verify TypeScript
+        run: npm run typecheck
+
+      - name: Execute isolated runtime verification
+        run: |
+          set -euo pipefail
+
+          npx --no-install wrangler dev \
+            --config test/runtime/sanitize-wrangler.toml \
+            --local \
+            --ip 127.0.0.1 \
+            --port 8792 \
+            > /tmp/sanitize-runtime.log 2>&1 &
+
+          PID=$!
+
+          trap 'kill "$PID" 2>/dev/null || true; cat /tmp/sanitize-runtime.log' EXIT
+
+          READY=0
+
+          for i in $(seq 1 60); do
+            if grep -q "Ready on" /tmp/sanitize-runtime.log; then
+              READY=1
+              break
+            fi
+
+            if ! kill -0 "$PID" 2>/dev/null; then
+              break
+            fi
+
+            sleep 1
+          done
+
+          test "$READY" = "1"
+
+          curl -sS --max-time 60 \
+            -o /tmp/sanitize-result.json \
+            -w '%{http_code}' \
+            http://127.0.0.1:8792/ \
+            > /tmp/sanitize-status.txt
+
+          cat /tmp/sanitize-result.json
+          echo
+
+          python3 - <<'PY'
+          import json
+
+          with open("/tmp/sanitize-result.json") as f:
+              result = json.load(f)
+
+          for name, passed in result["checks"].items():
+              print(
+                  ("PASS:" if passed else "FAIL:"),
+                  name
+              )
+
+          assert result["total"] == 18
+          assert result["passed"] == 18
+          assert result["ok"] is True
+          assert all(result["checks"].values())
+
+          with open("/tmp/sanitize-status.txt") as f:
+              assert f.read().strip() == "200"
+
+          print("RUNTIME_SANITIZER: 18/18 PASS")
+          print("Elapsed milliseconds:", result["elapsedMs"])
+          PY
